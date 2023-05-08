@@ -2,6 +2,7 @@ package smux
 
 import (
 	"container/heap"
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -119,7 +120,7 @@ func newSession(config *Config, conn io.ReadWriteCloser, client bool) *Session {
 }
 
 // OpenStream is used to create a new stream
-func (s *Session) OpenStream() (*Stream, error) {
+func (s *Session) OpenStream(ctx context.Context) (*Stream, error) {
 	if s.IsClosed() {
 		return nil, io.ErrClosedPipe
 	}
@@ -149,6 +150,8 @@ func (s *Session) OpenStream() (*Stream, error) {
 	s.streamLock.Lock()
 	defer s.streamLock.Unlock()
 	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	case <-s.chSocketReadError:
 		return nil, s.socketReadError.Load().(error)
 	case <-s.chSocketWriteError:
@@ -163,12 +166,12 @@ func (s *Session) OpenStream() (*Stream, error) {
 
 // Open returns a generic ReadWriteCloser
 func (s *Session) Open() (io.ReadWriteCloser, error) {
-	return s.OpenStream()
+	return s.OpenStream(context.Background())
 }
 
 // AcceptStream is used to block until the next available stream
 // is ready to be accepted.
-func (s *Session) AcceptStream() (*Stream, error) {
+func (s *Session) AcceptStream(ctx context.Context) (*Stream, error) {
 	var deadline <-chan time.Time
 	if d, ok := s.deadline.Load().(time.Time); ok && !d.IsZero() {
 		timer := time.NewTimer(time.Until(d))
@@ -177,6 +180,8 @@ func (s *Session) AcceptStream() (*Stream, error) {
 	}
 
 	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	case stream := <-s.chAccepts:
 		return stream, nil
 	case <-deadline:
@@ -192,7 +197,7 @@ func (s *Session) AcceptStream() (*Stream, error) {
 
 // Accept Returns a generic ReadWriteCloser instead of smux.Stream
 func (s *Session) Accept() (io.ReadWriteCloser, error) {
-	return s.AcceptStream()
+	return s.AcceptStream(context.Background())
 }
 
 // Close is used to close the session and all streams.
