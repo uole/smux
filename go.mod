@@ -1,3 +1,3 @@
-module github.com/xtaci/smux
+module github.com/uole/smux
 
 go 1.13
