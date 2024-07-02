@@ -1,6 +1,7 @@
 package smux
 
 import (
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -44,6 +45,8 @@ type Stream struct {
 	peerConsumed uint32        // num of bytes the peer has consumed
 	peerWindow   uint32        // peer window, initialized to 256KB, updated by peer
 	chUpdate     chan struct{} // notify of remote data consuming and window update
+	ctx          context.Context
+	cancel       context.CancelCauseFunc
 }
 
 // newStream initiates a Stream struct
@@ -57,6 +60,7 @@ func newStream(id uint32, frameSize int, sess *Session) *Stream {
 	s.die = make(chan struct{})
 	s.chFinEvent = make(chan struct{})
 	s.peerWindow = initialPeerWindow // set to initial window size
+	s.ctx, s.cancel = context.WithCancelCause(context.Background())
 	return s
 }
 
@@ -255,7 +259,7 @@ func (s *Stream) sendWindowUpdate(consumed uint32) error {
 	binary.LittleEndian.PutUint32(hdr[:], consumed)
 	binary.LittleEndian.PutUint32(hdr[4:], uint32(s.sess.config.MaxStreamBuffer))
 	frame.data = hdr[:]
-	_, err := s.sess.writeFrameInternal(frame, deadline, CLSDATA)
+	_, err := s.sess.writeFrameInternal(s.ctx, frame, deadline, CLSDATA)
 	return err
 }
 
@@ -325,7 +329,7 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		}
 		frame.data = bts[:sz]
 		bts = bts[sz:]
-		n, err := s.sess.writeFrameInternal(frame, deadline, CLSDATA)
+		n, err := s.sess.writeFrameInternal(s.ctx, frame, deadline, CLSDATA)
 		s.numWritten++
 		sent += n
 		if err != nil {
@@ -393,7 +397,7 @@ func (s *Stream) writeV2(b []byte) (n int, err error) {
 				}
 				frame.data = bts[:sz]
 				bts = bts[sz:]
-				n, err := s.sess.writeFrameInternal(frame, deadline, CLSDATA)
+				n, err := s.sess.writeFrameInternal(s.ctx, frame, deadline, CLSDATA)
 				atomic.AddUint32(&s.numWritten, uint32(sz))
 				sent += n
 				if err != nil {
@@ -429,12 +433,13 @@ func (s *Stream) Close() error {
 	var once bool
 	var err error
 	s.dieOnce.Do(func() {
+		s.cancel(io.ErrClosedPipe)
 		close(s.die)
 		once = true
 	})
 
 	if once {
-		_, err = s.sess.writeFrame(newFrame(byte(s.sess.config.Version), cmdFIN, s.id))
+		_, err = s.sess.writeFrame(context.Background(), newFrame(byte(s.sess.config.Version), cmdFIN, s.id))
 		s.sess.streamClosed(s.id)
 		return err
 	} else {

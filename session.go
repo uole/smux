@@ -143,7 +143,7 @@ func (s *Session) OpenStream(ctx context.Context) (*Stream, error) {
 
 	stream := newStream(sid, s.config.MaxFrameSize, s)
 
-	if _, err := s.writeFrame(newFrame(byte(s.config.Version), cmdSYN, sid)); err != nil {
+	if _, err := s.writeFrame(ctx, newFrame(byte(s.config.Version), cmdSYN, sid)); err != nil {
 		return nil, err
 	}
 
@@ -404,12 +404,14 @@ func (s *Session) recvLoop() {
 func (s *Session) keepalive() {
 	tickerPing := time.NewTicker(s.config.KeepAliveInterval)
 	tickerTimeout := time.NewTicker(s.config.KeepAliveTimeout)
-	defer tickerPing.Stop()
-	defer tickerTimeout.Stop()
+	defer func() {
+		tickerPing.Stop()
+		tickerTimeout.Stop()
+	}()
 	for {
 		select {
 		case <-tickerPing.C:
-			s.writeFrameInternal(newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, CLSCTRL)
+			s.writeFrameInternal(context.Background(), newFrame(byte(s.config.Version), cmdNOP, 0), tickerPing.C, CLSCTRL)
 			s.notifyBucket() // force a signal to the recvLoop
 		case <-tickerTimeout.C:
 			if !atomic.CompareAndSwapInt32(&s.dataReady, 1, 0) {
@@ -478,12 +480,12 @@ func (s *Session) sendLoop() {
 	})
 
 	if ok {
-		buf = make([]byte, headerSize)
+		buf = getBytes(headerSize)
 		vec = make([][]byte, 2)
 	} else {
-		buf = make([]byte, (1<<16)+headerSize)
+		buf = getBytes((1 << 16) + headerSize)
 	}
-
+	defer putBytes(buf)
 	for {
 		select {
 		case <-s.die:
@@ -527,12 +529,12 @@ func (s *Session) sendLoop() {
 
 // writeFrame writes the frame to the underlying connection
 // and returns the number of bytes written if successful
-func (s *Session) writeFrame(f Frame) (n int, err error) {
-	return s.writeFrameInternal(f, time.After(openCloseTimeout), CLSCTRL)
+func (s *Session) writeFrame(ctx context.Context, f Frame) (n int, err error) {
+	return s.writeFrameInternal(ctx, f, time.After(openCloseTimeout), CLSCTRL)
 }
 
 // internal writeFrame version to support deadline used in keepalive
-func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class CLASSID) (int, error) {
+func (s *Session) writeFrameInternal(ctx context.Context, f Frame, deadline <-chan time.Time, class CLASSID) (int, error) {
 	req := writeRequest{
 		class:  class,
 		frame:  f,
@@ -541,6 +543,8 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class C
 	}
 	select {
 	case s.shaper <- req:
+	case <-ctx.Done():
+		return 0, ctx.Err()
 	case <-s.die:
 		return 0, io.ErrClosedPipe
 	case <-s.chSocketWriteError:
@@ -550,6 +554,8 @@ func (s *Session) writeFrameInternal(f Frame, deadline <-chan time.Time, class C
 	}
 
 	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
 	case result := <-req.result:
 		return result.n, result.err
 	case <-s.die:

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"time"
 )
 
@@ -107,4 +108,13 @@ func Client(conn io.ReadWriteCloser, config *Config) (*Session, error) {
 		return nil, err
 	}
 	return newSession(config, conn, true), nil
+}
+
+// Dial connect client-side connection.
+func Dial(network string, addr string, config *Config) (*Session, error) {
+	conn, err := net.Dial(network, addr)
+	if err != nil {
+		return nil, err
+	}
+	return Client(conn, config)
 }
